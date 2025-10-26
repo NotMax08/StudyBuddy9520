@@ -1,131 +1,193 @@
-from ultralytics import YOLO
-import cv2
-import numpy as np
-import serial
-import time
+#include <Servo.h>
+#include <Encoder.h>
+#include "ServoController.h" // Assuming this library is installed
+#include <math.h>
+#include <Wire.h>
+#include <Arduino.h>  
 
-ARDUINO_PORT = '/dev/cu.usbserial-1130' 
-BAUD_RATE = 9600
+// --- FSM Configuration ---
+// CRITICAL: Must match the LOST_FLAG in the Python script
+const double LOST_FLAG = 9999.0; 
+// How close to center (0 error) before the robot stops moving (in pixels)
+const int CENTER_THRESHOLD = 200; 
 
-timer = 0
-TARGET_CLASS_ID = 67 
-CLASS_NAME = 'cell phone'
+// FSM States
+enum State {
+    STATE_WAITING, // Motor stopped, target centered or lost
+    STATE_TRACKING // Motor active, using PID to follow targetX
+};
 
-last_successful_cX = 0 
-last_successful_cY = 0
+State currentState = STATE_WAITING;
+bool isTargetLost = false; // Flag set when LOST_FLAG is received
 
-frames_since_last_detection = 0 
-MAX_LOST_FRAMES = 10
+// Flag to control one-time shooting action
+bool canShoot = false; 
 
+// --- PID Configuration ---
+ServoController yaw(3,11,12); 
+Servo pitch;
+double KpYaw = 0.2;
+double KdYaw = 30;
 
-try:
-    arduino = serial.Serial(ARDUINO_PORT, BAUD_RATE, timeout=0, write_timeout=0)
-    time.sleep(2) 
-except serial.SerialException as e:
-    exit()
+// The target coordinates (setpoints) coming from Python
+double targetX = 0;
+double targetY = 0;
 
-model = YOLO("yolov8n.pt") 
-cap = cv2.VideoCapture(0)
+// --- Motor Pins ---
+const int DIR_A = 7; 
+const int DIR_B = 8; 
+const int RPWM = 6; 
+const int LWPM = 5; 
 
-image_center_x, image_center_y = 0, 0
-has_center = False
+// --- Serial Communication Variables ---
+String inputString = "";         
+bool stringComplete = false;     
+const char TERMINATOR_CHAR = '\n'; 
 
+// Function Prototypes
+void readAndParseCoordinates_NonBlocking();
+void printStatus();
+void setMotorSpeed(int speed);
+void clearIntegralTerm(); // Placeholder for clearing PID windup
 
-def track_object(frame):
-    global image_center_x, image_center_y, has_center, last_successful_cX, last_successful_cY, frames_since_last_detection
+void setup() {
+  Wire.begin();
+  yaw.initialize();
+  yaw.reverseDirection();
+  yaw.setKp(KpYaw);
+  yaw.setKd(KdYaw);
+  pitch.attach(2);
+
+  Serial.begin(9600);
+  Serial.setTimeout(0); // CRITICAL: Non-blocking serial read
+
+  // Motor Pin Setup
+  pinMode(DIR_A, OUTPUT);
+  pinMode(DIR_B, OUTPUT);
+  pinMode(RPWM, OUTPUT);
+  pinMode(LWPM, OUTPUT);
+
+  digitalWrite(DIR_A, HIGH);
+  digitalWrite(DIR_B, HIGH);
+}
+
+void loop() {
+  // 1. Check for incoming data
+  pitch.write(70);
+  readAndParseCoordinates_NonBlocking();
+  if (targetX == 0){
+    yaw.turnOffServo();
+    Serial.println("bye"); 
+    // currentState = STATE_WAITING; 
+  } else {
+    yaw.turnOnServo();
+    if (abs(targetX) > CENTER_THRESHOLD){
+      setMotorSpeed(255);
+      
+    }
+  }
+  yaw.lockOn(targetX);
+  
+  // // 2. FSM State Transition Logic
+  // switch (currentState) {
     
-    if not has_center:
-        height, width, channels = frame.shape
-        image_center_x = int(width / 2)
-        image_center_y = int(height / 2)
-        has_center = True
+  //   case STATE_WAITING:
+  //     //setMotorSpeed(0); // Motor is explicitly stopped in WAITING state
+      
+  //     // *** SHOOTING ACTION: Executes once when target is centered ***
+  //     if (canShoot) {
+  //         //put shooting balls
+  //         canShoot = false; // reset the flag after shooting
+  //     }
 
-    detected_centers = []
-    results = model(frame, stream=False, verbose=False)
-    
-    target_found_in_frame = False
+  //     if (!isTargetLost && abs(targetX) > CENTER_THRESHOLD) {
+  //       yaw.turnOnServo();
+  //       currentState = STATE_TRACKING;
+  //     }
 
-    if results and results[0].boxes:
-        boxes = results[0].boxes
-        target_detections = boxes[boxes.cls == TARGET_CLASS_ID]
+  //   break; 
+      
+  //   case STATE_TRACKING:
+
+  //     if (isTargetLost) {
+  //       currentState = STATE_WAITING; 
+  //       yaw.turnOffServo();
+  //       break; 
+  //     }
+      
+  //     if (abs(targetX) <= CENTER_THRESHOLD) {
+  //       canShoot = true;
         
-        if len(target_detections) > 0:
-            for box in target_detections:
-                conf = box.conf[0].cpu().item() 
-                if (conf > 0.4): 
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                    
-                    # Calculate center relative to image center (cX is the error signal)
-                    cX = int((x1 + x2) / 2) - image_center_x
-                    cY = int((y1 + y2) / 2) - image_center_y
-                    
-                    center_abs = (int((x1 + x2) / 2), int((y1 + y2) / 2))
-                    detected_centers.append((cX, cY))
-                    
-                    # Update State (Found Target)
-                    last_successful_cX = cX
-                    last_successful_cY = cY
-                    
-                    frames_since_last_detection = 0
-                    target_found_in_frame = True
-                    
-                    # Drawing/Annotation
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.circle(frame, center_abs, 5, (0, 0, 255), -1)
-                    text_label = f"{CLASS_NAME} ({conf:.2f})"
-                    coord_label = f"X:{cX}, Y:{cY}"
-                    cv2.putText(frame, text_label, (x1, y1 - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    cv2.putText(frame, coord_label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                    
-                    break # We only need the first detection for tracking
-            
-
-        
-
-    if not target_found_in_frame:
-        frames_since_last_detection += 1
-    return frame, detected_centers
+  //       currentState = STATE_WAITING;
+  //       break; 
+  //     }
+      
+  //     // If still tracking, perform PID calculation and apply motor speed
+  //     if (targetX != 0){
+  //       yaw.turnOffServo();
+  //       yaw.lockOn(targetX);
+  //       currentState = STATE_WAITING; 
+  //     }
+  //     //setMotorSpeed(yaw.getControllerOutput()); 
+  //     break;
+  // }
+  
+  printStatus();
+}
 
 
-while True:
-    success, frame = cap.read()
-    if not success:
-        print("Failed to read frame from camera.")
-        break
-    
-    # Process the frame (keeping the flip from your previous attempt
-    processed_frame, positions = track_object(frame)
+void serialEvent() {
+  while (Serial.available()) {
+    char inChar = (char)Serial.read(); 
+    if (inChar == TERMINATOR_CHAR) {
+      stringComplete = true; 
+    } else {
+      inputString += inChar; 
+    }
+  }
+}
 
-    timer += 1
+void readAndParseCoordinates_NonBlocking() {
+  if (stringComplete) {
+    int commaIndex = inputString.indexOf(',');
+    if (commaIndex != -1) {
+        String xStr = inputString.substring(0, commaIndex);
+        String yStr = inputString.substring(commaIndex + 1);
+        targetX = xStr.toDouble(); 
+        targetY = yStr.toDouble();
+    }
+    inputString = "";
+    stringComplete = false;
+  }
+}
 
-    # Draw the absolute center line for visual reference
-    if has_center:
-        cv2.line(processed_frame, (image_center_x, 0), (image_center_x, frame.shape[0]), (255, 255, 0), 1)
-
-    cv2.imshow("YOLO Tracker", processed_frame)
 
 
-    if frames_since_last_detection < MAX_LOST_FRAMES:
-        target_cX = last_successful_cX
-        target_cY = last_successful_cY
-        status_text = f"TRACKING (Last known X: {target_cX})"
-    else:
-        target_cX = 0 
-        taret_cY = 0
-        status_text = "LOST - STOPPED"
+void printStatus() {
+  Serial.print("STATE: ");
+  Serial.print(currentState == STATE_WAITING ? "WAITING" : "TRACKING");
+  Serial.print(" | TargetX: ");
+  Serial.print(targetX); 
+  Serial.print(" | Output: ");
+  Serial.print(yaw.getControllerOutput()); 
+  Serial.print(" | cy:");
+  Serial.println(90 + (targetY * (30/400)));
+}
 
-    
-    data_for_arduino = f"{target_cX},{target_cY}\n"
-    
-    try:
-        arduino.write(data_for_arduino.encode())
-    except serial.SerialTimeoutException:
-        pass
-
-    key = cv2.waitKey(1) & 0xFF
-    if key == ord('q') or key == 27:
-        break
-
-cap.release()
-cv2.destroyAllWindows()
-arduino.close()
+void setMotorSpeed(int speed) {
+  // Constrain speed to a safe range
+  speed = constrain(speed, -255, 255);
+  if (speed > 0) {
+    // Forward (adjust pins for your motor driver setup)
+    analogWrite(LWPM, speed);
+    analogWrite(RPWM, 0);
+  } else if (speed < 0) {
+    // Reverse (adjust pins for your motor driver setup)
+    analogWrite(LWPM, 0);
+    analogWrite(RPWM, -speed); 
+  } else {
+    // Stop
+    analogWrite(LWPM, 0);
+    analogWrite(RPWM, 0);
+  }
+}

@@ -4,7 +4,8 @@ import numpy as np
 import serial
 import time
 
-ARDUINO_PORT = '/dev/cu.usbserial-1130' 
+#/dev/cu.usbserial-1130
+ARDUINO_PORT = '/dev/cu.usbserial-1120' 
 BAUD_RATE = 9600
 
 timer = 0
@@ -93,12 +94,12 @@ while True:
         print("Failed to read frame from camera.")
         break
     
-    # Process the frame (keeping the flip from your previous attempt
+
     processed_frame, positions = track_object(frame)
 
     timer += 1
 
-    # Draw the absolute center line for visual reference
+    
     if has_center:
         cv2.line(processed_frame, (image_center_x, 0), (image_center_x, frame.shape[0]), (255, 255, 0), 1)
 

@@ -1,54 +1,55 @@
 #include <Servo.h>
 #include <Encoder.h>
-#include "ServoController.h" // Assuming this library is installed
+#include "ServoController.h"
 #include <math.h>
 #include <Wire.h>
 #include <Arduino.h>  
 
-// --- FSM Configuration ---
-// CRITICAL: Must match the LOST_FLAG in the Python script
-const double LOST_FLAG = 9999.0; 
-// How close to center (0 error) before the robot stops moving (in pixels)
+
+
 const int CENTER_THRESHOLD = 200; 
 
 // FSM States
 enum State {
-    STATE_WAITING, // Motor stopped, target centered or lost
-    STATE_TRACKING // Motor active, using PID to follow targetX
+    STATE_WAITING,
+    STATE_TRACKING
 };
 
 State currentState = STATE_WAITING;
-bool isTargetLost = false; // Flag set when LOST_FLAG is received
+bool isTargetLost = false; 
 
-// Flag to control one-time shooting action
+
 bool canShoot = false; 
 
-// --- PID Configuration ---
+
 ServoController yaw(3,11,12); 
 Servo pitch;
 double KpYaw = 0.2;
 double KdYaw = 30;
 
-// The target coordinates (setpoints) coming from Python
+
 double targetX = 0;
 double targetY = 0;
 
-// --- Motor Pins ---
-const int DIR_A = 7; 
-const int DIR_B = 8; 
-const int RPWM = 6; 
-const int LWPM = 5; 
 
-// --- Serial Communication Variables ---
+const int DIR_A = 11; 
+const int DIR_B = 10; 
+const int LWPM = 9;
+
+
 String inputString = "";         
 bool stringComplete = false;     
 const char TERMINATOR_CHAR = '\n'; 
 
-// Function Prototypes
+unsigned long sequence_period = 2000; // 2 seconds
+unsigned long previousMillis = 0; 
+bool isYawAt90 = false;
+
 void readAndParseCoordinates_NonBlocking();
 void printStatus();
 void setMotorSpeed(int speed);
-void clearIntegralTerm(); // Placeholder for clearing PID windup
+void firstPart();
+void secondPart();
 
 void setup() {
   Wire.begin();
@@ -59,21 +60,18 @@ void setup() {
   pitch.attach(2);
 
   Serial.begin(9600);
-  Serial.setTimeout(0); // CRITICAL: Non-blocking serial read
+  Serial.setTimeout(0); 
 
   // Motor Pin Setup
-  pinMode(DIR_A, OUTPUT);
-  pinMode(DIR_B, OUTPUT);
-  pinMode(RPWM, OUTPUT);
-  pinMode(LWPM, OUTPUT);
+  //pinMode(RPWM, OUTPUT);
+  //pinMode(LWPM, OUTPUT);
 
-  digitalWrite(DIR_A, HIGH);
-  digitalWrite(DIR_B, HIGH);
+  //digitalWrite(DIR_A, HIGH);
+  //digitalWrite(DIR_B, HIGH);
 }
 
-void loop() {
-  // 1. Check for incoming data
-  pitch.write(70);
+void firstPart(){
+ pitch.write(70);
   readAndParseCoordinates_NonBlocking();
   if (targetX == 0){
     yaw.turnOffServo();
@@ -82,56 +80,38 @@ void loop() {
   } else {
     yaw.turnOnServo();
     if (abs(targetX) > CENTER_THRESHOLD){
-      Serial.println("SHOOOOOOOOOOT");
+      setMotorSpeed(255);
+      
     }
   }
   yaw.lockOn(targetX);
-  
-  // // 2. FSM State Transition Logic
-  // switch (currentState) {
-    
-  //   case STATE_WAITING:
-  //     //setMotorSpeed(0); // Motor is explicitly stopped in WAITING state
-      
-  //     // *** SHOOTING ACTION: Executes once when target is centered ***
-  //     if (canShoot) {
-  //         //put shooting balls
-  //         canShoot = false; // reset the flag after shooting
-  //     }
 
-  //     if (!isTargetLost && abs(targetX) > CENTER_THRESHOLD) {
-  //       yaw.turnOnServo();
-  //       currentState = STATE_TRACKING;
-  //     }
-
-  //   break; 
-      
-  //   case STATE_TRACKING:
-
-  //     if (isTargetLost) {
-  //       currentState = STATE_WAITING; 
-  //       yaw.turnOffServo();
-  //       break; 
-  //     }
-      
-  //     if (abs(targetX) <= CENTER_THRESHOLD) {
-  //       canShoot = true;
-        
-  //       currentState = STATE_WAITING;
-  //       break; 
-  //     }
-      
-  //     // If still tracking, perform PID calculation and apply motor speed
-  //     if (targetX != 0){
-  //       yaw.turnOffServo();
-  //       yaw.lockOn(targetX);
-  //       currentState = STATE_WAITING; 
-  //     }
-  //     //setMotorSpeed(yaw.getControllerOutput()); 
-  //     break;
-  // }
-  
   printStatus();
+}
+
+void secondPart(){
+  unsigned long currentMillis = millis();
+
+  // Check if 2000 milliseconds (2 seconds) have passed
+  if (currentMillis - previousMillis >= sequence_period) {
+    previousMillis = currentMillis;
+    isYawAt90 = !isYawAt90;
+  }
+
+  if (isYawAt90){
+    yaw.rotateContinuous(120);
+  } else {
+    yaw.rotateContinuous(60);
+  }
+
+  int pitchTarget = isYawAt90 ? 90 : 120;
+  pitch.write(pitchTarget);
+
+}
+
+void loop() {
+  //secondPart();
+  firstPart();
 }
 
 
@@ -176,17 +156,23 @@ void printStatus() {
 void setMotorSpeed(int speed) {
   // Constrain speed to a safe range
   speed = constrain(speed, -255, 255);
+  // Magnitude is the absolute value of the speed
+  int magnitude = abs(speed);
+  
   if (speed > 0) {
-    // Forward (adjust pins for your motor driver setup)
-    analogWrite(LWPM, speed);
-    analogWrite(RPWM, 0);
+    // Forward: DIR_A HIGH, DIR_B LOW
+    digitalWrite(DIR_A, HIGH);
+    digitalWrite(DIR_B, LOW);
   } else if (speed < 0) {
-    // Reverse (adjust pins for your motor driver setup)
-    analogWrite(LWPM, 0);
-    analogWrite(RPWM, -speed); 
+    // Reverse: DIR_A LOW, DIR_B HIGH
+    digitalWrite(DIR_A, LOW);
+    digitalWrite(DIR_B, HIGH); 
   } else {
-    // Stop
-    analogWrite(LWPM, 0);
-    analogWrite(RPWM, 0);
+    // Stop/Brake: Both pins LOW (or both HIGH for quick brake, but LOW is safer/slower)
+    digitalWrite(DIR_A, LOW);
+    digitalWrite(DIR_B, LOW);
   }
+
+  // Set the magnitude (speed) on the PWM pin
+  analogWrite(LWPM, magnitude);
 }
