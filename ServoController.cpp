@@ -20,6 +20,14 @@ double ServoController::track() {
     return angle;
 }
 
+void ServoController::turnOffServo(){
+    on = false;
+}
+
+void ServoController::turnOnServo(){
+    on = true;
+}
+
 void ServoController::reverseDirection(){
     reverse = true; 
 }
@@ -28,12 +36,16 @@ void ServoController::setKp(double newKp){
     Kp = newKp;
 }
 
-double ServoController::outputPositional(double targetPosition, double currentPosition) {
+void ServoController::setKd(double newKd){
+    Kd = newKd;
+}
+
+
+double ServoController::outputPositional(double error) {
     unsigned long now = millis();
     double deltaTime = (now - lastTime);
-    double error = targetPosition - currentPosition;
     double derivative = (error - lastError) / deltaTime;
-    derivativeOutput = derivative;
+    derivativeOutput = derivative * Kd;
 
     lastError = error;
     lastTime = now;
@@ -42,21 +54,31 @@ double ServoController::outputPositional(double targetPosition, double currentPo
 
 double ServoController::normalizePower(double pidOutput) {
     if (!reverse){
-        normalizedOutput = 90 - (pidOutput * 30.0 / 270.0);
+        normalizedOutput = 90 - (pidOutput * 30.0 / 500);
     } else {
-        normalizedOutput = 90 + (pidOutput * 30.0 / 270.0);
+        normalizedOutput = 90 + (pidOutput * 30.0 / 500);
     }
-    if (normalizedOutput <0){
-        normalizedOutput = 0;
-    } else if (normalizedOutput > 180){
-        normalizedOutput = 180;
+
+    if (normalizedOutput < 80){
+        normalizedOutput = 81;
+    }
+
+    if (normalizedOutput > 110){
+        normalizedOutput = 100;
     }
     return normalizedOutput;
 }
 
-void ServoController::lockOn(double targetAngle) {
-    servo.write(normalizePower(outputPositional(targetAngle, angle)));
+void ServoController::lockOn(double error) {
+    if (on){
+        power = normalizePower(outputPositional(error));
+    
+    } else {
+        power = 90;
+    }
+    servo.write(power);
 }
+
 
 void ServoController::rotateContinuous(double speed) {
     servo.write(speed);
@@ -68,6 +90,10 @@ double ServoController::getControllerOutput(){
 
 double ServoController::getAngle() {
     return angle;
+}
+
+double ServoController::getError() {
+    return lastError;
 }
 
 double ServoController::getDerivativeOutput() {

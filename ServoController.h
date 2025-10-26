@@ -10,10 +10,11 @@ public:
 
     void initialize();
     double track();
-    double outputPositional(double targetPosition, double currentPosition);
+    double outputPositional(double error);
     double normalizePower(double pidOutput);
     void lockOn(double targetAngle);
     void rotateContinuous(double speed);
+    double getError();
 
     double getAngle();
     double getDerivativeOutput();
@@ -22,12 +23,16 @@ public:
     void reverseDirection();
 
     void setKp(double newKp);
+    void setKd(double newKd);
+
+    void turnOffServo();
+    void turnOnServo();
 
 private:
     int servoPin;
     Servo servo;
     Encoder myEnc;
-
+    double power = 0;
     bool reverse = false;
 
     const long COUNTS_PER_REV = 8192;
@@ -36,6 +41,8 @@ private:
 
     double Kp = 3.5;
     double Kd = 0;
+
+    bool on = true;
 
     double derivativeOutput = 0;
     double normalizedOutput = 0;
